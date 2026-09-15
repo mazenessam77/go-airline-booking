@@ -116,10 +116,10 @@ jobs:
       - run: go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
       - run: goose -dir migrations up
       - name: Build API binary
-        run: go build -o api ./cmd/api
+        run: go build -o ./bin/api ./cmd/api
       - name: Start API in background
         run: |
-          ./api >api.log 2>&1 &
+          ./bin/api >api.log 2>&1 &
           echo "$!" >api.pid
           api_ready=false
           for i in $(seq 1 30); do
