@@ -12,21 +12,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mazenessam77/go-airline-booking/internal/auth"
+	"github.com/mazenessam77/go-airline-booking/internal/booking"
 	"github.com/mazenessam77/go-airline-booking/internal/config"
 	"github.com/mazenessam77/go-airline-booking/internal/database"
+	"github.com/mazenessam77/go-airline-booking/internal/flight"
+	"github.com/mazenessam77/go-airline-booking/internal/httpapi"
+	"github.com/mazenessam77/go-airline-booking/internal/observability"
+	"github.com/mazenessam77/go-airline-booking/internal/payment"
+	"github.com/mazenessam77/go-airline-booking/internal/quote"
+	"github.com/mazenessam77/go-airline-booking/internal/webui"
 )
 
 func main() {
-	logger := slog.New(
-		slog.NewJSONHandler(os.Stdout, nil),
-	)
+	logger := observability.NewLogger(os.Stdout)
 
 	if err := run(logger); err != nil {
-		logger.Error(
-			"application stopped",
-			"error",
-			err,
-		)
+		logger.Error("application stopped", "code", "startup_failed")
 
 		os.Exit(1)
 	}
@@ -57,6 +59,14 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 
 	mux := http.NewServeMux()
+	authHTTP := httpapi.AuthHandler{Store: auth.NewStore(pool), Limiter: httpapi.PostgresRateLimiter{Pool: pool}, TrustedProxies: cfg.TrustedProxies}
+	authHTTP.RegisterRoutes(mux)
+	httpapi.RegisterFlightRoutes(mux, flight.Store{Pool: pool})
+	httpapi.RegisterBookingRoutes(mux, authHTTP, booking.NewStore(pool), quote.Store{Pool: pool})
+	httpapi.RegisterPaymentRoutes(mux, authHTTP, booking.NewStore(pool), payment.Store{Pool: pool}, nil)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		httpapi.Error(w, r, 404, "not_found", "Resource not found")
+	})
 
 	mux.HandleFunc("GET /healthz", func(
 		writer http.ResponseWriter,
@@ -95,10 +105,10 @@ func run(logger *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           securityHeaders(mux),
+		Handler:           webui.Handler(httpapi.New(mux, httpapi.Options{Logger: logger, Timeout: cfg.RequestTimeout, BodyLimit: cfg.BodyLimit, AllowedOrigins: cfg.AllowedOrigins, TrustedProxies: cfg.TrustedProxies})),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      cfg.RequestTimeout + 5*time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}

@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#183fdb" />
+    <meta
+      name="description"
+      content="Find a flight, choose your seat, and manage your booking."
+    />
+    <title>Airline — A little closer to your next adventure</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+    <script type="module" src="/assets/app.js"></script>
+  </head>
+  <body>
+    <header class="header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="Airline home"
+          ><span class="brand-mark" aria-hidden="true">↗</span>airline<span
+            class="brand-dot"
+            >.</span
+          ></a
+        >
+        <nav aria-label="Main navigation">
+          <button class="nav-link active" id="flights-tab" type="button">
+            Find flights</button
+          ><button class="nav-link" id="bookings-tab" type="button">
+            My bookings</button
+          ><button class="nav-link" id="guide-button" type="button">
+            Demo guide
+          </button>
+        </nav>
+        <div class="header-actions">
+          <span id="connection" class="connection"><i></i>Connecting</span
+          ><button
+            class="button small secondary"
+            id="account-button"
+            type="button"
+          >
+            Sign in <span aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </div>
+    </header>
+    <main class="container">
+      <section class="hero" aria-labelledby="hero-heading">
+        <div>
+          <div class="eyebrow">
+            <span class="eyebrow-line"></span> MORE PLACES. MORE POSSIBILITIES.
+          </div>
+          <h1 id="hero-heading">
+            Your next chapter<br />starts with a <em>flight.</em>
+          </h1>
+          <p>
+            A window seat. A new city. Something to look forward to.<br />Find
+            your next flight and make it yours.
+          </p>
+        </div>
+        <div class="journey-art" aria-hidden="true">
+          <div class="orbit orbit-one"></div>
+          <div class="orbit orbit-two"></div>
+          <span class="art-plane">✈</span>
+          <div class="destination-stamp">
+            <span>NEXT STOP</span><strong>Somewhere new.</strong
+            ><small>CAI <b>→</b> THE WORLD</small>
+          </div>
+          <div class="art-label"><span>✦</span> Take the scenic route</div>
+        </div>
+      </section>
+      <section id="search-section" aria-label="Search flights">
+        <form id="search-form" class="search-card">
+          <div class="search-top">
+            <span class="trip-type"><i></i> One-way</span
+            ><span class="muted"
+              >Choose your route. We’ll take it from here.</span
+            >
+          </div>
+          <div class="search-fields">
+            <label
+              >From<select
+                id="origin"
+                name="origin"
+                aria-label="Departure airport"
+              >
+                <option value="CAI">Cairo · CAI</option>
+                <option value="DXB">Dubai · DXB</option>
+                <option value="LHR">London · LHR</option>
+                <option value="JED">Jeddah · JED</option>
+                <option value="ASW">Aswan · ASW</option>
+              </select></label
+            ><button
+              type="button"
+              id="swap-route"
+              class="swap"
+              aria-label="Swap airports"
+            >
+              ⇄</button
+            ><label
+              >To<select
+                id="destination"
+                name="destination"
+                aria-label="Arrival airport"
+              >
+                <option value="DXB">Dubai · DXB</option>
+                <option value="LHR">London · LHR</option>
+                <option value="JED">Jeddah · JED</option>
+                <option value="ASW">Aswan · ASW</option>
+                <option value="CAI">Cairo · CAI</option>
+              </select></label
+            ><label
+              >Departure<input
+                type="date"
+                id="departure-date"
+                name="date"
+                required /></label
+            ><label
+              >Travelers<select id="traveler-count" name="travelers">
+                <option value="1">1 traveler</option>
+                <option value="2">2 travelers</option>
+                <option value="3">3 travelers</option>
+                <option value="4">4 travelers</option>
+              </select></label
+            ><button type="submit" class="button primary search-button">
+              Search flights <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </form>
+      </section>
+      <div class="demo-strip">
+        <span class="pill">DEMO</span>
+        <p>
+          Explore with fictional flights and real booking flows. No real
+          charges.
+        </p>
+        <button id="demo-login" type="button">
+          Try a demo account <span aria-hidden="true">↗</span>
+        </button>
+      </div>
+      <div
+        id="notice"
+        class="notice"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></div>
+      <div class="workspace">
+        <section id="results-panel" aria-labelledby="results-heading">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow small-eyebrow" id="results-eyebrow">
+                LET’S GO SOMEWHERE
+              </div>
+              <h2 id="results-heading">Available flights</h2>
+              <p id="results-caption" class="muted">
+                Choose a flight to get started.
+              </p>
+            </div>
+            <span class="sort-label"
+              >Departure time <span aria-hidden="true">↓</span></span
+            >
+          </div>
+          <div id="flight-results" aria-live="polite"></div>
+          <button
+            class="button secondary more-button"
+            id="more-flights"
+            type="button"
+            hidden
+          >
+            Show more flights
+          </button>
+          <div id="booking-list" hidden></div>
+          <button
+            class="button secondary more-button"
+            id="more-bookings"
+            type="button"
+            hidden
+          >
+            Show more bookings
+          </button>
+        </section>
+        <aside id="booking-panel" class="booking-panel" aria-label="Your trip">
+          <div class="panel-header">
+            <span class="eyebrow small-eyebrow"
+              >ALL THE DETAILS, IN ONE PLACE</span
+            >
+            <h2>Your trip</h2>
+          </div>
+          <div id="trip-content">
+            <div class="empty-trip">
+              <span class="empty-icon" aria-hidden="true">✈</span>
+              <h3>A good trip starts here.</h3>
+              <p>
+                Choose a flight to see your fare,<br />add travelers, and pick
+                your seats.
+              </p>
+              <div class="trip-steps">
+                <span><b>1</b> Choose a flight</span
+                ><span><b>2</b> Add your travelers</span
+                ><span><b>3</b> Make yourself comfortable</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+      <footer>
+        <span class="brand footer-brand"
+          >airline<span class="brand-dot">.</span></span
+        ><span>Less planning. More looking forward.</span
+        ><span class="footer-note">Demo workspace · Fictional travel data</span>
+      </footer>
+    </main>
+    <dialog id="auth-dialog" aria-labelledby="auth-title">
+      <button
+        class="dialog-close"
+        type="button"
+        data-close="auth-dialog"
+        aria-label="Close account dialog"
+      >
+        ×</button
+      ><span class="eyebrow small-eyebrow">WELCOME ABOARD</span>
+      <h2 id="auth-title">Good to see you.</h2>
+      <p class="muted" id="auth-description">
+        Sign in to save your next adventure.
+      </p>
+      <form id="auth-form">
+        <div id="register-names" class="two-columns" hidden>
+          <label
+            >First name<input
+              name="first_name"
+              autocomplete="given-name"
+              maxlength="100" /></label
+          ><label
+            >Last name<input
+              name="last_name"
+              autocomplete="family-name"
+              maxlength="100"
+          /></label>
+        </div>
+        <label
+          >Email address<input
+            name="email"
+            type="email"
+            autocomplete="username"
+            required
+            maxlength="254" /></label
+        ><label
+          >Password<input
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            maxlength="128"
+        /></label>
+        <p id="auth-error" class="form-error" role="alert" hidden></p>
+        <button class="button primary full" type="submit" id="auth-submit">
+          Sign in
+        </button>
+      </form>
+      <button type="button" class="text-button full" id="auth-toggle">
+        New here? Create an account
+      </button>
+      <p class="tiny muted">
+        Credentials stay in memory. Reloading this page signs you out.
+      </p>
+    </dialog>
+    <dialog id="guide-dialog" aria-labelledby="guide-title">
+      <button
+        class="dialog-close"
+        type="button"
+        data-close="guide-dialog"
+        aria-label="Close demo guide"
+      >
+        ×</button
+      ><span class="eyebrow small-eyebrow">TAKE A LOOK AROUND</span>
+      <h2 id="guide-title">Your demo flight plan.</h2>
+      <p class="muted">
+        Use fictional details and explore the full seat-booking journey.
+      </p>
+      <ol class="guide-list">
+        <li>
+          <strong>Start with a demo account</strong
+          ><span
+            >A fresh account is created for this tab. Or register your own
+            account to return to your bookings.</span
+          >
+        </li>
+        <li>
+          <strong>Find your flight</strong
+          ><span
+            >Cairo ↔ Dubai, London, Jeddah, and Aswan. Demo departures are
+            seeded for the next seven days.</span
+          >
+        </li>
+        <li>
+          <strong>Add travelers and pick seats</strong
+          ><span
+            >Create a booking, add fictional passenger details, and select one
+            seat per traveler. Gray seats are unavailable.</span
+          >
+        </li>
+        <li>
+          <strong>Try the booking controls</strong
+          ><span
+            >Repeat a hold, release seats, cancel an unpaid booking, or reopen a
+            trip from My bookings.</span
+          >
+        </li>
+        <li>
+          <strong>Explore concurrency and expiry</strong
+          ><span
+            >Open another browser tab and use a different demo account to
+            compete for the same seat. Holds expire after 15 minutes while the
+            worker runs.</span
+          >
+        </li>
+      </ol>
+      <div class="info-box">
+        <strong>Payments are not connected.</strong>
+        <p>
+          No card details are collected. Payment/refund behavior and webhook
+          replay are covered by backend tests.
+        </p>
+      </div>
+      <button
+        class="button primary full"
+        data-close="guide-dialog"
+        type="button"
+      >
+        Let’s explore <span aria-hidden="true">→</span>
+      </button>
+    </dialog>
+    <dialog id="account-dialog" aria-labelledby="account-title">
+      <button
+        class="dialog-close"
+        type="button"
+        data-close="account-dialog"
+        aria-label="Close session dialog"
+      >
+        ×</button
+      ><span class="eyebrow small-eyebrow">YOUR ACCOUNT</span>
+      <h2 id="account-title">You’re signed in.</h2>
+      <p id="account-email" class="muted"></p>
+      <div class="stack">
+        <button type="button" class="button secondary" id="refresh-session">
+          Refresh session</button
+        ><button type="button" class="button secondary" id="logout">
+          Sign out of this session</button
+        ><button type="button" class="button danger" id="logout-all">
+          Sign out everywhere
+        </button>
+      </div>
+    </dialog>
+  </body>
+</html>

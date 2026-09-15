@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/mazenessam77/go-airline-booking/internal/idempotency"
 )
 
 type lockedSeat struct {
@@ -63,6 +64,15 @@ func (store *Store) HoldSeats(
 	}()
 
 	var bookingStatus string
+	var record idempotency.Record
+	if normalizedParams.IdempotencyKey != "" {
+		var previous SeatHold
+		var replay bool
+		record, replay, err = idempotency.Begin(ctx, tx, normalizedParams.UserID, "POST /v1/bookings/"+normalizedParams.BookingID+"/seat-holds", normalizedParams.IdempotencyKey, normalizedParams, &previous)
+		if err != nil || replay {
+			return previous, err
+		}
+	}
 	var segmentStatus string
 	var bookingHoldExpiresAt pgtype.Timestamptz
 
@@ -79,11 +89,13 @@ func (store *Store) HoldSeats(
 			WHERE b.id = $1
 			  AND bs.id = $2
 			  AND bs.flight_instance_id = $3
+			  AND b.user_id = $4
 			FOR UPDATE OF b, bs
 		`,
 		normalizedParams.BookingID,
 		normalizedParams.BookingSegmentID,
 		normalizedParams.FlightInstanceID,
+		normalizedParams.UserID,
 	).Scan(
 		&bookingStatus,
 		&bookingHoldExpiresAt,
@@ -103,6 +115,31 @@ func (store *Store) HoldSeats(
 		segmentStatus != "HELD" {
 		return SeatHold{}, ErrBookingNotHoldable
 	}
+	var departure time.Time
+	var flightStatus string
+	err = tx.QueryRow(ctx, `SELECT scheduled_departure_at,status FROM flight_instances WHERE id=$1 FOR SHARE`, normalizedParams.FlightInstanceID).Scan(&departure, &flightStatus)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	if flightStatus != "SCHEDULED" && flightStatus != "DELAYED" {
+		return SeatHold{}, ErrBookingNotHoldable
+	}
+	seatIDsToValidate := make([]string, 0, len(normalizedParams.Seats))
+	for _, v := range normalizedParams.Seats {
+		seatIDsToValidate = append(seatIDsToValidate, v.FlightSeatID)
+	}
+	var eligibleSeats int
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM flight_seats fs
+		JOIN aircraft_seats ast ON ast.id=fs.aircraft_seat_id JOIN flight_instances fi ON fi.id=fs.flight_instance_id
+		JOIN aircraft ac ON ac.id=fi.aircraft_id JOIN booking_segments bs ON bs.flight_instance_id=fi.id
+		JOIN fare_offers fo ON fo.id=bs.fare_offer_id
+		WHERE bs.id=$1 AND fs.id=ANY($2::uuid[]) AND ast.cabin=fo.cabin AND ast.aircraft_type_id=ac.aircraft_type_id`, normalizedParams.BookingSegmentID, seatIDsToValidate).Scan(&eligibleSeats)
+	if err != nil {
+		return SeatHold{}, err
+	}
+	if eligibleSeats != len(normalizedParams.Seats) {
+		return SeatHold{}, ErrSeatUnavailable
+	}
 
 	var databaseTime time.Time
 	var newHoldExpiresAt time.Time
@@ -115,8 +152,8 @@ func (store *Store) HoldSeats(
 		ctx,
 		`
 			SELECT
-				CURRENT_TIMESTAMP,
-				CURRENT_TIMESTAMP
+				clock_timestamp(),
+				clock_timestamp()
 					+ ($1 * INTERVAL '1 second')
 		`,
 		holdSeconds,
@@ -173,6 +210,23 @@ func (store *Store) HoldSeats(
 	)
 	if err != nil {
 		return SeatHold{}, err
+	}
+
+	// Re-read wall time after lock waits; transaction timestamps can be stale.
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&databaseTime); err != nil {
+		return SeatHold{}, fmt.Errorf("read hold clock: %w", err)
+	}
+	if bookingStatus == "HELD" && !bookingHoldExpiresAt.Time.After(databaseTime) {
+		return SeatHold{}, ErrBookingNotHoldable
+	}
+	if bookingStatus == "DRAFT" {
+		newHoldExpiresAt = databaseTime.Add(store.seatHoldDuration)
+	}
+	if !departure.After(databaseTime) {
+		return SeatHold{}, ErrBookingNotHoldable
+	}
+	if newHoldExpiresAt.After(departure) {
+		newHoldExpiresAt = departure
 	}
 
 	err = applySeatAssignments(
@@ -245,13 +299,6 @@ func (store *Store) HoldSeats(
 		return SeatHold{}, ErrInventoryConflict
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return SeatHold{}, fmt.Errorf(
-			"commit seat hold transaction: %w",
-			err,
-		)
-	}
-
 	seatIDs := make(
 		[]string,
 		0,
@@ -265,11 +312,23 @@ func (store *Store) HoldSeats(
 		)
 	}
 
-	return SeatHold{
+	result := SeatHold{
 		BookingID: normalizedParams.BookingID,
 		SeatIDs:   seatIDs,
 		ExpiresAt: newHoldExpiresAt,
-	}, nil
+	}
+	if normalizedParams.IdempotencyKey != "" {
+		if err = record.Save(ctx, tx, result.BookingID, result); err != nil {
+			return SeatHold{}, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO outbox_events(aggregate_id,event_type) VALUES($1,'SEATS_HELD')`, result.BookingID); err != nil {
+		return SeatHold{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return SeatHold{}, fmt.Errorf("commit seat hold transaction: %w", err)
+	}
+	return result, nil
 }
 
 func normalizeHoldParams(
@@ -288,6 +347,11 @@ func normalizeHoldParams(
 	)
 
 	var valid bool
+
+	normalized.UserID, valid = normalizeUUID(params.UserID)
+	if !valid {
+		return HoldSeatsParams{}, ErrInvalidHoldRequest
+	}
 
 	normalized.BookingID, valid =
 		normalizeUUID(params.BookingID)
@@ -357,7 +421,7 @@ func normalizeUUID(value string) (string, bool) {
 		strings.TrimSpace(value),
 	)
 
-	if len(normalized) != 36 {
+	if len(normalized) != 36 || normalized[8] != '-' || normalized[13] != '-' || normalized[18] != '-' || normalized[23] != '-' {
 		return "", false
 	}
 
@@ -367,7 +431,7 @@ func normalizeUUID(value string) (string, bool) {
 		return "", false
 	}
 
-	return normalized, uuid.Valid
+	return normalized, uuid.Valid && uuid.Bytes != [16]byte{}
 }
 
 func lockPassengers(
@@ -682,6 +746,10 @@ func applySeatAssignments(
 				!hasAssignment ||
 				assignment.Status != "HELD" ||
 				!assignment.HoldExpiresAt.Valid {
+				return ErrInventoryConflict
+			}
+			if seat.BookingID != assignment.BookingID ||
+				!seat.HoldExpiresAt.Time.Equal(assignment.HoldExpiresAt.Time) {
 				return ErrInventoryConflict
 			}
 
