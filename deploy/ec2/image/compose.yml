@@ -1,0 +1,83 @@
+name: airline-booking
+
+x-app: &app
+  image: ${AIRLINE_IMAGE:?AIRLINE_IMAGE is required}
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    APP_ENV: development
+    DATABASE_URL: postgres://airline:${POSTGRES_PASSWORD}@postgres:5432/airline_booking_demo?sslmode=disable
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [backend]
+
+services:
+  postgres:
+    image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: airline_booking_demo
+      POSTGRES_USER: airline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U airline -d airline_booking_demo]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  migrate:
+    image: ${AIRLINE_IMAGE:?AIRLINE_IMAGE is required}
+    entrypoint: [/app/goose]
+    command:
+      - -dir
+      - /app/migrations
+      - postgres
+      - postgres://airline:${POSTGRES_PASSWORD}@postgres:5432/airline_booking_demo?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  seed-demo:
+    image: ${AIRLINE_IMAGE:?AIRLINE_IMAGE is required}
+    entrypoint: [/app/seed-demo]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://airline:${POSTGRES_PASSWORD}@postgres:5432/airline_booking_demo?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  api:
+    <<: *app
+    entrypoint: [/app/api]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://airline:${POSTGRES_PASSWORD}@postgres:5432/airline_booking_demo?sslmode=disable
+      HTTP_ADDR: :8080
+    ports:
+      - 127.0.0.1:8080:8080
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/readyz]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  worker:
+    <<: *app
+    entrypoint: [/app/worker]
+
+networks:
+  backend:
+
+volumes:
+  postgres_data:
+

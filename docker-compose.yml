@@ -1,4 +1,41 @@
 services:
+  api:
+    profiles: [app]
+    build: .
+    restart: unless-stopped
+    environment:
+      APP_ENV: development
+      DATABASE_URL: ${CONTAINER_DATABASE_URL:-}
+      HTTP_ADDR: :8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  worker:
+    profiles: [app]
+    build: .
+    entrypoint: ["/app/worker"]
+    restart: unless-stopped
+    environment:
+      APP_ENV: development
+      DATABASE_URL: ${CONTAINER_DATABASE_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   postgres:
     image: postgres:17-alpine
     container_name: airline-postgres

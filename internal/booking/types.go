@@ -8,6 +8,9 @@ type SeatSelection struct {
 }
 
 type HoldSeatsParams struct {
+	// UserID must come from a verified authentication principal.
+	UserID           string
+	IdempotencyKey   string
 	BookingID        string
 	BookingSegmentID string
 	FlightInstanceID string
