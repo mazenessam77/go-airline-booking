@@ -10,3 +10,4 @@ coverage/
 bin/
 coverage.out
 .DS_Store
+api/api
