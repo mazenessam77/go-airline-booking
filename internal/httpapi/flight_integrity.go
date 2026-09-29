@@ -43,7 +43,7 @@ func verifyFareFreshness(ctx context.Context) {
 	if !lab.Enabled("latency") {
 		return
 	}
-	wait := 1500*time.Millisecond + time.Duration(rand.IntN(1000))*time.Millisecond
+	wait := 1500*time.Millisecond + time.Duration(rand.IntN(1000))*time.Millisecond // #nosec G404 -- jitter for an injected lab delay, not security-sensitive
 	select {
 	case <-time.After(wait):
 	case <-ctx.Done():

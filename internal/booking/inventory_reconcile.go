@@ -16,7 +16,7 @@ func reconcileHeldInventory(ctx context.Context, tx pgx.Tx, flightInstanceID str
 	if !lab.Enabled("booking-latency") {
 		return nil
 	}
-	settle := 1.0 + rand.Float64()*2.0
+	settle := 1.0 + rand.Float64()*2.0 // #nosec G404 -- jitter for an injected lab delay, not security-sensitive
 	var held int
 	err := tx.QueryRow(ctx, `
 		SELECT count(*)
