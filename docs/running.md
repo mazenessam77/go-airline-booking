@@ -61,7 +61,7 @@ export Q="origin=CAI&destination=JED&date=$DATE&limit=20"
 curl --fail-with-body -i "$B/v1/flights?$Q"
 ```
 
-For an authenticated quote → booking → passenger → seat selection, use the [booking setup helper](labs/booking-latency.md#prepare-a-real-booking). For the browser/API smoke journey against the fault-free demo:
+For an authenticated quote → booking → passenger → seat selection, use the [booking setup helper](labs/booking-latency.md#2-what-should-i-check-first). For the browser/API smoke journey against the fault-free demo:
 
 ```sh
 node scripts/ui-smoke.mjs
@@ -77,7 +77,7 @@ LAB_FAULTS=booking-latency docker compose --profile app up -d --force-recreate a
 LAB_FAULTS= docker compose --profile app up -d --force-recreate api
 ```
 
-Run one of those commands at a time. Confirm readiness after each recreate. The active fault names appear in the `HTTP server started` log. `latency` affects `GET /v1/flight-instances/{id}` with a randomized 1.5–2.5-second context-aware wait; the two full investigations focus on CPU and booking latency. With default `REQUEST_TIMEOUT=10s`, enough contention can produce a timeout even when the fault itself requests a shorter wait.
+Run one of those commands at a time. Confirm readiness after each recreate. The active fault names appear in the `HTTP server started` log. Each fault has its own walkthrough in the [incident index](lab.md). Enable only the one you're investigating.
 
 The [CPU guide](labs/cpu.md) uses valid search traffic. The [booking guide](labs/booking-latency.md) prepares authenticated requests, checks the required idempotency key, and bounds repeat traffic.
 

@@ -123,14 +123,17 @@ The long version, with an incident-record template, is in [the investigation met
 
 ## The labs
 
-Each lab is written as an incident: symptom, reproduce, measure, gather evidence, known vs assumed, narrow, root cause, verify, lesson. The cause comes last, so work through the evidence first.
+Each lab is a guided investigation in ten steps: symptom, what to check first, where to look next, commands and metrics, what each result means, known vs assumed, narrowing layer by layer, root cause, fix and verification, and the key lesson. The cause is always at step 8, so work through the evidence first.
 
 | Lab | Reported symptom | Fault switch |
 | --- | --- | --- |
-| [Lab 1: CPU](docs/labs/cpu.md) | "Flight search got slow and API CPU jumped." | `LAB_FAULTS=cpu` |
-| [Lab 2: seat-hold latency](docs/labs/booking-latency.md) | "Hold seat spins for seconds, then works. Health checks are green." | `LAB_FAULTS=booking-latency` |
+| [1: CPU](docs/labs/cpu.md) | "Flight search is slow and the API is running hot." | `LAB_FAULTS=cpu` |
+| [2: Seat-hold latency](docs/labs/booking-latency.md) | "Hold seat spins for seconds, but monitoring is green." | `LAB_FAULTS=booking-latency` |
+| [3: Flight-details latency](docs/labs/flight-details-latency.md) | "Opening a flight takes two seconds; search is instant." | `LAB_FAULTS=latency` |
+| [4: Container crash loop](docs/labs/environment-incidents.md#incident-4-the-api-container-keeps-restarting) | "The API container keeps restarting." | Environment |
+| [5: Ping works, scrape fails](docs/labs/environment-incidents.md#incident-5-ping-works-but-prometheus-cant-scrape-the-api) | "Prometheus can't reach the API." | Environment |
 
-A third switch, `LAB_FAULTS=latency`, slows `GET /v1/flight-instances/{id}`. It has no full write-up and makes a good unguided exercise ([lab index](docs/lab.md)).
+Start with the [incident index](docs/lab.md), which also has a triage flowchart for the first ten minutes of any "it's slow" ticket.
 
 ## Lessons from building the lab
 
@@ -142,7 +145,7 @@ These came up while setting the lab up and monitoring it. They're worth reading 
 
 **Code fact:** `GET /v1/flights` requires `origin`, `destination`, and `date` (`YYYY-MM-DD`). Validation rejects anything else before any SQL runs (`internal/flight/store.go`). The test was measuring how fast the API says no.
 
-**Lesson:** read status codes and a sample response body before you trust a benchmark. Throughput without a status breakdown means little. Details in [Lab 1](docs/labs/cpu.md#the-fast-load-test-that-was-all-400s).
+**Lesson:** read status codes and a sample response body before you trust a benchmark. Throughput without a status breakdown means little. Details in [Lab 1](docs/labs/cpu.md#2-what-should-i-check-first).
 
 ### Docker bind address: reachable host, refused port
 
@@ -280,7 +283,7 @@ The full sheet (Docker, HTTP, PostgreSQL, PromQL, Kubernetes, networking) is in 
 
 | Topic | Document |
 | --- | --- |
-| Labs | [Lab index](docs/lab.md) · [CPU](docs/labs/cpu.md) · [Seat-hold latency](docs/labs/booking-latency.md) |
+| Labs | [Incident index](docs/lab.md) · [CPU](docs/labs/cpu.md) · [Seat-hold latency](docs/labs/booking-latency.md) · [Flight-details latency](docs/labs/flight-details-latency.md) · [Environment incidents](docs/labs/environment-incidents.md) |
 | Method | [Investigation method](docs/troubleshooting-method.md) |
 | Setup | [Running the lab](docs/running.md) · [Commands](docs/commands.md) |
 | Signals | [Observability and PromQL](docs/observability.md) · [Database and pool troubleshooting](docs/database-troubleshooting.md) |

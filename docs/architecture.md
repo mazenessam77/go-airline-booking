@@ -17,8 +17,8 @@ flowchart LR
 ```
 
 Public `GET /v1/flights` validates origin, destination, and date, queries upcoming
-flight instances, then serializes a result page. The optional CPU fault runs after the
-query while producing an ETag. Flight details and seat maps use separate endpoints.
+flight instances, then serializes a result page. Flight details and seat maps use
+separate endpoints.
 
 An authenticated booking starts from a trusted quote for a fare. The quote is consumed
 once to create a DRAFT booking. After adding passengers, the user can call
@@ -27,8 +27,7 @@ passenger/seat pairs, and a valid idempotency key. The hold service begins a tra
 checks eligibility and ownership, locks inventory in deterministic order, writes seat
 assignments and booking state, and commits the response/replay record together. A worker
 expires holds and claims outbox events using the same PostgreSQL database. See the
-[booking incident](labs/booking-latency.md) and [database guide](database-troubleshooting.md)
-for the fault and its pool impact.
+[incident walkthroughs](lab.md) and the [database guide](database-troubleshooting.md).
 
 The API exposes `/healthz`, `/readyz`, and `/metrics`. The embedded web UI at `/`
 uses the same HTTP routes. The local [Compose file](../docker-compose.yml) runs API,

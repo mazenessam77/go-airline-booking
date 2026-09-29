@@ -1,41 +1,46 @@
-# Lab 2: Seat-hold latency incident
+# Incident 2: "Hold seat spins for seconds, but monitoring is green"
 
-[Back to the lab](../../README.md) · [Metrics and PromQL](../observability.md) · [Database troubleshooting](../database-troubleshooting.md)
+[All incidents](../lab.md) · [Back to the README](../../README.md) · [Database troubleshooting](../database-troubleshooting.md) · [Metrics and PromQL](../observability.md)
 
-Work through the sections in order. The cause is near the end on purpose. Statements are labeled **Code fact** (readable in this repository), **Lab observation** (one run on one machine, and yours will differ), or **Lesson**.
+This is written as I'd work it on call, one step at a time, saying why each step comes next. The cause is at step 8.
 
-## 1. Symptom
+- **Observed:** one run on a MacBook. Your numbers will differ.
+- **Code fact:** something you can read in this repository.
 
-> "Customers say *Hold seat* spins for a couple of seconds before it confirms. It does work, and nobody lost a seat. Everything else feels normal. Monitoring is all green."
-
-The affected call is `POST /v1/bookings/{booking_id}/seat-holds`. Keep "monitoring is all green" in mind. It's the most important clue in the ticket.
-
-## 2. Reproduce
-
-Finish [local setup](../running.md) first, including demo data. Then enable the scenario:
+**Setup:** finish [running the lab](../running.md), then:
 
 ```sh
 export B=${B:-http://127.0.0.1:8080}
 export DATE=$(date -u -v+1d +%F 2>/dev/null || date -u -d tomorrow +%F)
 LAB_FAULTS=booking-latency docker compose --profile app up -d --force-recreate api
-curl --fail-with-body "$B/readyz"               # retry until ready
-docker compose logs api | grep lab_faults       # should show ["booking-latency"]
+curl --fail-with-body "$B/readyz"                # retry until ready
+docker compose logs api | grep lab_faults        # expect ["booking-latency"]
 ```
 
-`docker compose restart` does **not** apply a new `LAB_FAULTS` value. The container has to be recreated.
+`docker compose restart` won't pick up a new `LAB_FAULTS` value. The container has to be recreated.
 
-### Prepare a real booking
+---
 
-A seat hold needs a logged-in user, a quote, a DRAFT booking, a passenger, and a free seat in the right cabin. [scripts/lab-booking-setup.sh](../../scripts/lab-booking-setup.sh) does all of that with a random fictional account and prints shell exports (`TOKEN`, `BOOKING_ID`, `SEGMENT_ID`, `FLIGHT_ID`, `PASSENGER_ID`, `SEAT_ID`, `HOLD_BODY`). It does not hold the seat.
+## 1. Symptom
+
+> "Customers say *Hold seat* spins for a couple of seconds before it confirms. It does work and nobody lost a seat. Everything else feels normal. Monitoring is all green."
+
+Two details stand out: **it works but it's slow**, and **monitoring is green**. So I shouldn't expect errors, and the existing dashboards aren't measuring what the users feel. My first job is to measure that one request myself.
+
+## 2. What should I check first?
+
+**Reproduce the exact user action with a valid request.** A seat hold isn't a one-liner. It needs a logged-in user, a quote, a DRAFT booking, a passenger, and a free seat in the right cabin. If I skip any of that, I'll get a fast 4xx and measure the wrong thing.
+
+The repo has a helper that does the whole flow with a random fictional account ([`scripts/lab-booking-setup.sh`](../../scripts/lab-booking-setup.sh)). It prints shell exports and doesn't hold the seat:
 
 ```sh
 out=$(B="$B" DATE="$DATE" sh scripts/lab-booking-setup.sh) && eval "$out"; unset out
-echo "$BOOKING_ID"
+echo "$BOOKING_ID"          # should be a UUID; if you saw "lab setup: …", stop and fix that
 ```
 
-If the script prints `lab setup: …`, fix that first. Don't carry on with variables left over from an earlier run. `TOKEN` is a live access token: don't paste it anywhere. It expires after 10 minutes, so rerun the script when you get a 401.
+`TOKEN` is a live access token (valid for 10 minutes), so don't paste it anywhere.
 
-### Send one hold
+Now the actual user action:
 
 ```sh
 curl -sS -D - -o /dev/null -X POST "$B/v1/bookings/$BOOKING_ID/seat-holds" \
@@ -45,118 +50,165 @@ curl -sS -D - -o /dev/null -X POST "$B/v1/bookings/$BOOKING_ID/seat-holds" \
   | grep -iE '^x-request-id|^status='
 ```
 
-Expect `status=200`. Write down the `X-Request-ID`.
-
-**Code fact:** `Idempotency-Key` must be 16–128 printable ASCII characters (`internal/idempotency/idempotency.go`). A short key like `test1` gets a fast `400 invalid_input` and never reaches the hold logic, which is the same trap as the [HTTP 400 load test](cpu.md#the-fast-load-test-that-was-all-400s). Repeating a hold for the same passenger and seat is valid and returns 200 again.
-
-## 3. Measure
-
-**Lab observation** (fault on, one run):
+**Observed:**
 
 ```text
+X-Request-Id: 2653aa7a4e9723a5c427362de4dda1e2
 status=200 connect=0.000280s ttfb=2.351411s total=2.352500s
-status=200 connect=0.000290s ttfb=2.177644s total=2.178202s
-status=200 connect=0.000252s ttfb=1.200070s total=1.200471s
 ```
 
-How to read those numbers:
+Reproduced: a **200 after 2.35 s**. I save the request ID. It's the thread I'll pull through the logs.
 
-- **Connect time is under a millisecond.** The network path isn't the problem.
-- **TTFB is almost the whole total.** The time passes before the server sends anything, not while the body downloads. (Part of the reason: `http.TimeoutHandler` buffers the whole response, so the first byte leaves only when the handler finishes.)
-- **Latency varies**, from 1.2 to 2.4 s, instead of sitting at a fixed value.
+> The idempotency key has to be 16–128 printable ASCII characters. A short key like `test1` gets a fast `400 invalid_input` and never reaches the hold code. That's the same trap as benchmarking 400s in [incident 1](cpu.md#2-what-should-i-check-first).
 
-Now compare nearby endpoints on the same booking:
+## 3. Where should I look next?
+
+Before digging in, I want to know two things: **is it only this endpoint**, and **is the network involved?**
+
+The connect time already answers the network question: 0.00028 s. And since TTFB ≈ total, the time is spent before the first response byte, while the server is working.
+
+Now I compare the healthy neighbors: same user, same token, same booking, same database:
 
 ```sh
-curl -sS -o /dev/null -H "Authorization: Bearer $TOKEN" \
-  -w 'booking status=%{http_code} total=%{time_total}s\n' "$B/v1/bookings/$BOOKING_ID"
-curl -sS -o /dev/null -H "Authorization: Bearer $TOKEN" \
-  -w 'seats   status=%{http_code} total=%{time_total}s\n' "$B/v1/bookings/$BOOKING_ID/seats"
+curl -sS -o /dev/null -H "Authorization: Bearer $TOKEN" -w 'booking GET status=%{http_code} total=%{time_total}s\n' "$B/v1/bookings/$BOOKING_ID"
+curl -sS -o /dev/null -H "Authorization: Bearer $TOKEN" -w 'seats GET   status=%{http_code} total=%{time_total}s\n' "$B/v1/bookings/$BOOKING_ID/seats"
 curl -sS -o /dev/null -w 'healthz=%{http_code} ' "$B/healthz"; curl -sS -o /dev/null -w 'readyz=%{http_code}\n' "$B/readyz"
 ```
 
-**Lab observation:** booking GET ~7 ms, seats GET ~4 ms, releasing the hold ~6 ms, `healthz=200 readyz=200`. The same user, token, booking, and database were all fast on every other call.
+**Observed:** booking GET about 7 ms, seats GET about 4 ms, `healthz=200 readyz=200`.
 
-## 4. Gather evidence
-
-Collect these while a hold is actually running. Start a hold in one terminal and take the samples in another during the ~2-second window, or use the loop in [generating steady traffic](#generating-steady-traffic).
-
-**Access log for the request ID:**
-
-```sh
-REQUEST_ID=replace-with-your-x-request-id
-docker compose logs --no-log-prefix api | grep "$REQUEST_ID"
+```text
+                     same user · same token · same booking · same DB
+GET  /bookings/{id}          ~7 ms   ✅
+GET  /bookings/{id}/seats    ~4 ms   ✅
+POST /bookings/{id}/seat-holds  ~2,350 ms  ❌
+/healthz, /readyz            200     ✅  ← why monitoring is green
 ```
 
-**Lab observation:** `"status":200,"duration_ms":2347`. The server measured the same ~2.35 s as the client, so the time is spent inside the API's handling. The log has no per-stage timing, and tracing isn't wired in, so it can't tell you *which* stage.
+That rules out a lot: auth, the network, "the whole database is slow", and "the API is overloaded". Whatever it is lives in the **seat-hold path only**.
 
-**Resources:**
+Why are health checks green? `/healthz` only checks that the process answers, and `/readyz` only pings PostgreSQL (`cmd/api/main.go`). Neither one holds a seat.
+
+## 4. What commands, metrics, and logs should I use?
+
+I'll check each layer while a hold is **in flight**, so I start a hold in one terminal and sample in another during the roughly 2-second window. For a steadier stream, see [generating steady traffic](#generating-steady-traffic).
+
+**App logs, by request ID:**
+
+```sh
+docker compose logs --no-log-prefix api | grep 2653aa7a4e9723a5c427362de4dda1e2   # use your ID
+```
+
+**CPU, memory, and the pool:**
 
 ```sh
 docker stats --no-stream go-airline-booking-api-1 airline-postgres
-curl -s "$B/metrics" | grep -E '^(db_pool_acquired_connections|db_pool_max_connections|http_requests_in_flight)'
+curl -s "$B/metrics" | grep -E '^(db_pool_acquired_connections|db_pool_max_connections|http_requests_in_flight) '
 ```
 
-**Lab observation:** API CPU ~0.5%, PostgreSQL ~2.9%, `db_pool_acquired_connections 1` out of a max of 20, and `http_requests_in_flight 1`. Nothing is busy, and one request has one connection checked out.
-
-**PostgreSQL:** open `psql` and run the [session inspection query](../database-troubleshooting.md#read-only-session-inspection) during a hold. Then look at locks held by non-idle sessions:
+**PostgreSQL: what is each connection doing right now?**
 
 ```sh
 docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d airline_booking_demo'
 ```
 
 ```sql
+-- sessions: state, wait, transaction age, blockers, query
+SELECT pid, state, wait_event_type, wait_event,
+       clock_timestamp() - xact_start AS xact_age,
+       pg_blocking_pids(pid) AS blockers,
+       left(query, 120) AS query
+FROM pg_stat_activity
+WHERE datname = current_database() AND pid <> pg_backend_pid() AND state <> 'idle';
+
+-- locks held by those sessions
 SELECT l.locktype, l.mode, l.granted, count(*)
 FROM pg_locks l JOIN pg_stat_activity a USING (pid)
 WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() AND a.state <> 'idle'
 GROUP BY 1, 2, 3 ORDER BY 1, 2;
 ```
 
-Record `state`, `wait_event_type`, `wait_event`, `pg_blocking_pids`, the transaction age, and the first part of the query text.
+Type `\watch 1` after a query to rerun it every second.
 
-**With Prometheus**, graph these over the same window (full set in [observability](../observability.md#promql-for-both-incidents)):
+**Prometheus** (if set up):
 
 ```promql
 histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{
   job="mac-go-api",route="POST /v1/bookings/{booking_id}/seat-holds",status="200"}[5m])))
 ```
 
-```promql
-up{job="mac-go-api"}
+## 5. What does each result mean?
+
+**App log.** Observed: `"status":200,"duration_ms":2347`. The server measured the same 2.35 s as my client, so the time is inside the API's request handling. The log has no per-stage timings and there's no tracing, so it can't say *which* stage. I have to look at the dependencies.
+
+**CPU.** Observed: API about 0.5%, PostgreSQL about 2.9%. **Nobody is working.** High latency with idle CPU means the request is **waiting** on something. That's the most important fork in the whole investigation:
+
+```text
+slow + high CPU  → something is computing       (incident 1)
+slow + low CPU   → something is waiting         ← we are here
+                   on what? network · pool · lock · statement · timer
 ```
 
-A 15-second scrape can land between two 2-second holds, so a `db_pool_acquired_connections` of 0 on a graph doesn't mean the pool was unused. Counters like `db_pool_acquires_total` keep the history that gauges lose.
+**Pool.** Observed: `db_pool_acquired_connections 1` of max 20, `http_requests_in_flight 1`. One request, one connection checked out. So the request *does* have a database connection during the wait, and it isn't queuing for one.
 
-## 5. What we know vs what we assume
+**PostgreSQL sessions.** Observed, sampled mid-hold:
 
-| Known (measured) | Assumed or unknown so far |
+```text
+state=active | wait_event_type=Timeout | wait_event=PgSleep | xact_age=0.85s | blockers={}
+query: SELECT count(*) FROM (SELECT pg_sleep($2)) AS settle, flight_seats AS fs LEFT JOIN seat_a…
+```
+
+**Locks.** Observed: 13 × `relation AccessShareLock` (ordinary reads) and 1 × `virtualxid ExclusiveLock` (every transaction holds one). **All granted.** No row locks, nothing waiting.
+
+How to read the PostgreSQL columns:
+
+| Column | Value seen | Meaning |
+| --- | --- | --- |
+| `state` | `active` | A statement is executing. That doesn't mean the CPU is busy. |
+| `wait_event_type` / `wait_event` | `Timeout` / `PgSleep` | The statement is waiting on a **timer**: it called `pg_sleep()` |
+| `blockers` | `{}` | No other session blocks it |
+| `xact_age` | growing | A transaction is open the whole time |
+
+If it had been a lock problem, I'd have seen `wait_event_type = Lock`, a `granted = false` row, and a non-empty `blockers`.
+
+## 6. What do we know vs what are we only assuming?
+
+| Known (measured) | Only assumed / ruled out |
 | --- | --- |
-| Holds take ~1–2.5 s and succeed | That this is "normal database slowness" |
-| Health, readiness, and `up` all look fine | That the pool is exhausted (one connection was in use) |
-| Network connect time is negligible | That a row lock is blocking the hold |
-| Server-side duration matches client duration | That an external service is involved |
-| API and PostgreSQL CPU are near idle | That adding CPU or pool connections would help |
-| Other endpoints on the same booking are fast | Which statement inside the hold is slow |
+| Hold takes ~1–2.5 s and returns 200 | ~~"Network is slow"~~: connect time is ~0.3 ms |
+| Only the hold path is slow | ~~"DB is overloaded"~~: other DB-backed calls are fast, PG CPU is ~3% |
+| Health checks never exercise the hold | ~~"Pool exhausted"~~: 1 of 20 in use |
+| CPU is idle, so the request is waiting | ~~"Lock contention"~~: all locks granted, no blockers |
+| PostgreSQL is running a statement that waits on `PgSleep` inside an open transaction | **Why** the hold code sends that statement |
 
-Low CPU plus high latency means *waiting*. The rest of the investigation is about finding out what the request waits on.
+Early on, "it's a DB problem" was the tempting guess. It's half right: the wait happens *in* PostgreSQL, but PostgreSQL isn't struggling. It's doing exactly what it was asked to do. The question has moved from the database to the application: who asks it to sleep?
 
-## 6. Narrow the problem
+## 7. How do I narrow the problem layer by layer?
 
-Work through the candidates using the evidence from step 4:
+This is the path I took, with the result at each fork:
 
-1. **Network?** No. Connect time is under a millisecond, and server duration equals client duration.
-2. **CPU-heavy code?** No. Both processes are idle during the request.
-3. **Pool exhaustion?** Not at this load. One connection was acquired out of 20. (Under heavy concurrency it could become a *consequence*. See the lesson.)
-4. **Lock contention?** **Lab observation:** the only locks held were 13 `AccessShareLock` relation locks (ordinary reads) and one `virtualxid` lock, all granted, and `pg_blocking_pids` was empty. A blocked hold would show an ungranted lock and a non-empty blocker list.
-5. **A slow statement?** **Lab observation:** there was one `active` session, in a transaction open for ~0.85 s at sample time, with `wait_event_type = Timeout` and `wait_event = PgSleep`, running a `SELECT count(*) … FROM (SELECT pg_sleep($2)) …` over `flight_seats` and `seat_assignments`.
+```mermaid
+flowchart TD
+    A[Seat hold slow, returns 200] --> B{Network? connect time}
+    B -- "~0.3 ms" --> C{Whole API or one route?}
+    C -- "only seat-holds" --> D{CPU busy?}
+    D -- "idle: it's waiting" --> E{Waiting for a pool connection?}
+    E -- "no: 1 of 20 in use" --> F{Blocked on a lock?}
+    F -- "no: all granted, no blockers" --> G{What is the active statement waiting on?}
+    G -- "Timeout / PgSleep" --> H[Read the seat-hold code path]
+```
 
-That last row settles it. `PgSleep` is the wait event PostgreSQL reports when a statement calls `pg_sleep()`. The database isn't struggling. It was asked to wait, while the application's transaction and pool connection stay open.
+**When to open the code:** now, and not earlier. I know the route (`POST /v1/bookings/{booking_id}/seat-holds`), I know it's a SQL statement containing `pg_sleep` that runs over `flight_seats` and `seat_assignments`, and I know it runs inside a transaction. That's specific enough to go straight to the right function:
 
-The question left: *why does the seat-hold code send a query that sleeps?*
+```sh
+grep -rn 'pg_sleep' --include='*.go' internal/
+```
 
-## 7. Root cause
+The route handler in `internal/httpapi/booking.go` calls `HoldSeats` in `internal/booking/hold_seats.go`. Reading `HoldSeats` from the top, the first thing after `BeginTx` is a call to `reconcileHeldInventory`.
 
-**Code fact:** [`HoldSeats`](../../internal/booking/hold_seats.go) begins a READ COMMITTED transaction, which checks out a pool connection. Before the idempotency check and before any row locks, it calls [`reconcileHeldInventory`](../../internal/booking/inventory_reconcile.go). With `LAB_FAULTS` containing `booking-latency`, that function picks a random delay between 1 and 3 seconds and runs:
+## 8. Root cause
+
+**Code fact:** [`HoldSeats`](../../internal/booking/hold_seats.go) begins a READ COMMITTED transaction, which checks out a pool connection. Before the idempotency check and before any row locks, it calls [`reconcileHeldInventory`](../../internal/booking/inventory_reconcile.go). When `LAB_FAULTS` contains `booking-latency`, that function picks a random delay between 1 and 3 seconds and runs:
 
 ```sql
 SELECT count(*)
@@ -168,27 +220,44 @@ WHERE fs.flight_instance_id = $1
   AND fs.state = 'HELD';
 ```
 
-The result is scanned and thrown away. Despite the name and comment, nothing is reconciled or validated. Afterwards the normal hold logic runs unchanged: locks, availability checks, writes, commit.
+The count is scanned into a variable and thrown away. Despite the name and the comment, nothing gets reconciled. Afterwards the real hold logic runs normally: locks, availability checks, writes, commit.
 
-That explains every observation:
+```text
+POST /seat-holds
+  └─ BeginTx  ─────────────── pool connection checked out ───────────────┐
+      ├─ reconcileHeldInventory → SELECT … pg_sleep(1–3 s)   ← the wait   │
+      ├─ idempotency check                                               │
+      ├─ lock booking, seats (FOR UPDATE)                                │
+      ├─ write seat_assignments, flight_seats, bookings                  │
+      └─ COMMIT ─────────────────────────────── connection returned ─────┘
+```
 
-- **Latency without CPU:** PostgreSQL is sleeping, not working.
-- **Variable latency:** the delay is random.
-- **Health checks green:** `/healthz` and `/readyz` never run this code.
-- **No lock waits:** the sleep happens before the hold takes its row locks.
-- **Other booking endpoints fast:** only `HoldSeats` calls it.
-- **Correct results:** the real hold logic is untouched.
+Every observation fits:
 
-**Lab observation** from checking the query directly in `psql`: with a 0.5 s sleep argument, it took ~0.5 s both for a flight with held seats and for one without. The sleep ran either way on this data.
+| Observation | Explained by |
+| --- | --- |
+| Slow but always 200 | The real hold logic is untouched |
+| 1–3 s, varies | Random sleep duration |
+| CPU idle | PostgreSQL is sleeping, not working |
+| One pool connection in use | Held by the open transaction during the sleep |
+| No lock waits | The sleep runs *before* the hold takes row locks |
+| `Timeout/PgSleep` | Literally `pg_sleep()` |
+| Health checks and other endpoints fine | Only `HoldSeats` calls it |
 
-## 8. Verify
+**Observed**, testing the query alone in `psql`: with a 0.5 s argument, it took about 0.5 s both for a flight with held seats and for one without. The sleep runs either way.
+
+## 9. Fix / verification
+
+Turn the fault off. In real code, you'd delete the pointless query, and in general you'd keep slow or external calls *outside* open transactions.
 
 ```sh
 LAB_FAULTS= docker compose --profile app up -d --force-recreate api
 curl --fail-with-body "$B/readyz"
 ```
 
-The access token is still valid if under 10 minutes have passed, so rerun the single hold from step 2 and the endpoint comparison from step 3. **Lab observation:** with the fault off, the same hold returned 200 in ~0.024 s. It's a bit slower than a GET because it takes locks and writes rows, but it's nowhere near seconds. There should be no `PgSleep` session in `pg_stat_activity` during a hold. In Prometheus, compare seat-hold p95 over a fresh window.
+Then repeat **the same hold** (the token lasts 10 minutes, so rerun the setup helper if you get a 401) and the same neighbor comparison from step 3.
+
+**Observed** after the fix: the hold returned `200` in about **0.024 s**. That's a bit slower than a GET because it locks and writes rows, but it's nowhere near seconds. During a hold, `pg_stat_activity` no longer shows a `PgSleep` session. In Prometheus, compare seat-hold p95 over a fresh window.
 
 Release the seat when you're done:
 
@@ -200,17 +269,19 @@ unset TOKEN HOLD_BODY
 
 Holds you don't release expire after 15 minutes, and the worker cleans them up.
 
-## 9. Lesson
+## 10. Key lesson
 
-- **UP isn't fast.** Every health signal was green during the whole incident. Only a latency measurement on the business route showed the problem.
-- **Low CPU plus high latency means waiting.** Find *what* the request waits on: network, pool, lock, statement, or timer. Don't just add capacity.
-- **`pg_stat_activity` answers "what is this connection doing right now?"** `wait_event` separates a lock wait (`Lock`) from I/O or a deliberate sleep (`Timeout/PgSleep`).
-- **Application behavior can look like a database problem.** PostgreSQL was healthy. The application asked it to wait while holding a transaction open.
-- **Bigger pools don't fix slow transactions.** Every hold keeps a connection checked out for 1–3 s. At about 20 concurrent holds, the API's pool (max 20) runs out, and *unrelated* routes start waiting for connections. Raising the pool size only lets more requests wait at once. (Not measured in this write-up. Try it and watch `db_pool_empty_acquires_total`.)
+- **UP is not fast.** Everything was green because no health check exercises the business action. Measure the route users actually complain about.
+- **Low CPU plus high latency means waiting.** Then find *what* it waits on, one layer at a time: network, pool, lock, statement.
+- **`pg_stat_activity.wait_event` is the fastest way to tell a lock wait from I/O or a timer.**
+- **"The database is slow" is often "the application makes the database wait".** PostgreSQL was healthy the whole time.
+- **Long transactions tie up pool connections.** Each hold keeps a connection for 1–3 s. At about 20 concurrent holds, the API's 20-connection pool runs out, and unrelated routes start queuing for connections. A bigger pool just lets more requests wait at once. (Not measured here. Try it and watch `db_pool_empty_acquires_total`.)
+
+---
 
 ## Generating steady traffic
 
-This loop prepares one booking and re-holds it every ten seconds for four minutes. It stays under the 10-minute token lifetime and the rate limits (30 auth requests per IP per minute, 60 booking mutations per user per minute), and it releases the seat at the end:
+One booking, re-held every 10 s for 4 minutes. It stays under the 10-minute token lifetime and the rate limits (30 auth requests per IP per minute, 60 booking mutations per user per minute), and it releases the seat at the end:
 
 ```sh
 (
@@ -228,4 +299,4 @@ This loop prepares one booking and re-holds it every ten seconds for four minute
 )
 ```
 
-A 401 means the token expired. A 409 means the seat went to someone else or the hold expired. A 429 means you hit a rate limit. Stop and look at any of these. None of them is a fast successful hold.
+A 401 means the token expired, a 409 means the seat went to someone else or the hold expired, and a 429 means you hit a rate limit. Stop and look at any of these. None of them is a fast successful hold.

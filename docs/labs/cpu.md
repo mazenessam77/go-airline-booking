@@ -1,184 +1,228 @@
-# Lab 1: CPU incident
+# Incident 1: "Flight search is slow and the API is running hot"
 
-[Back to the lab](../../README.md) · [Metrics and PromQL](../observability.md) · [Commands](../commands.md)
+[All incidents](../lab.md) · [Back to the README](../../README.md) · [Metrics and PromQL](../observability.md)
 
-Work through the sections in order. The cause is near the end on purpose.
+This is written the way I'd work it on call: one check at a time, saying why each check comes next. The cause is at step 8. Try to call it before you get there.
 
-Three kinds of statements appear below, and they're labeled:
-
+Labels you'll see:
+- **Observed:** what one run on a MacBook with 8 CPUs actually showed. Your numbers will differ.
 - **Code fact:** something you can read in this repository.
-- **Lab observation:** a measurement from one run on one machine. Yours will differ.
-- **Lesson:** general troubleshooting practice.
 
-## 1. Symptom
-
-> "Flight search got slow after the last deploy, and the API hosts are running hot."
-
-Nobody has said which requests, how slow, or since when. That's normal.
-
-## 2. Reproduce
-
-Finish [local setup](../running.md) first. Then enable the scenario and build a valid query:
+**Setup (do this first):** finish [running the lab](../running.md), then start the scenario:
 
 ```sh
 export B=${B:-http://127.0.0.1:8080}
 export DATE=$(date -u -v+1d +%F 2>/dev/null || date -u -d tomorrow +%F)
-export Q="origin=CAI&destination=JED&date=$DATE&limit=20"
-
 LAB_FAULTS=cpu docker compose --profile app up -d --force-recreate api
-curl --fail-with-body "$B/readyz"               # retry until it returns ready
-docker compose logs api | grep lab_faults       # should show ["cpu"]
-curl --fail-with-body -i "$B/v1/flights?$Q"
+curl --fail-with-body "$B/readyz"            # retry until {"status":"ready"}
 ```
 
-You want `HTTP/1.1 200` and an `items` array. The seeder creates two CAI→JED flights per day, so expect two items.
+---
 
-### The fast load test that was all 400s
+## 1. Symptom
 
-**Lab observation:** the first load test in the original experiment reported high throughput and low latency. Every single response was HTTP 400.
+> "Flight search got slow after the last deploy. The API hosts are running hot."
 
-Try the request that test sent:
+That's everything I get. No endpoint list, no numbers, no timeline. Before touching anything, I write down what I'd want to know: *which* requests, *how* slow, *compared to what*, and *is CPU actually high or does it just feel slow?*
+
+## 2. What should I check first?
+
+**Whether I can reproduce it with a request I know is valid.** If I can't reproduce it, every graph I open afterwards is guesswork.
+
+The complaint mentions search, so I start there. My first attempt is the lazy one:
 
 ```sh
 curl -i "$B/v1/flights"
 ```
 
-**Code fact:** `GET /v1/flights` validates its query before touching the database (`internal/flight/store.go`):
+```text
+HTTP/1.1 400 Bad Request
+{"error":{"code":"invalid_input","message":"Invalid flight query",...}}
+```
 
-| Parameter | Requirement |
-| --- | --- |
-| `origin`, `destination` | Three-letter airport codes, and they must differ |
-| `date` | `YYYY-MM-DD`, treated as a UTC day |
-| `limit` | Optional, 1–100, default 50 |
-| `after_id` + `after_departure` | Optional pagination cursor. Both are required together. |
+It's fast, and it's useless. A 400 means the API rejected my request before doing the real work, so its latency tells me nothing about search.
 
-A rejected request returns `400 invalid_input` without running SQL or anything after it. A benchmark of 400s measures the validation path, not search.
+> This is exactly how the lab's first load test fooled everyone: great throughput, tiny latency, and 100% HTTP 400. Always look at the status code before the timing.
 
-**Lesson:** before you trust any throughput number, look at the status-code breakdown and one response body.
-
-## 3. Measure
-
-Take a small sequential sample, then light parallel load:
+**Where do I find the valid shape?** The route is in `internal/httpapi/flight.go`, and the validation is in `Search` in `internal/flight/store.go`. It requires `origin`, `destination` (three-letter codes that differ) and `date` (`YYYY-MM-DD`). `limit` is optional, from 1 to 100.
 
 ```sh
-for i in 1 2 3 4 5; do
+export Q="origin=CAI&destination=JED&date=$DATE&limit=20"
+curl --fail-with-body -i "$B/v1/flights?$Q"
+```
+
+Now I get `200` and an `items` array (two flights in the demo data). *Now* I can measure.
+
+## 3. Where should I look next?
+
+I need a number and a baseline. "Slow" means nothing until I compare it with something.
+
+```sh
+for i in 1 2 3; do
   curl -sS -o /dev/null \
     -w 'status=%{http_code} connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s\n' \
     "$B/v1/flights?$Q"
 done
-
-hey -z 15s -c 4 "$B/v1/flights?$Q"      # optional; check the status distribution at the bottom
 ```
 
-While `hey` runs, in another terminal:
+**Observed:** `status=200 … total=0.32s`, consistently. To get a baseline, I recreate the API with `LAB_FAULTS=` and rerun: about **0.003 s**. So the same valid request is roughly **100× slower**. I set the fault back on and continue.
+
+What these three numbers tell me:
+
+```text
+connect ≈ 0      → the network handshake is not the problem
+ttfb ≈ total     → the time is spent before the server sends anything
+total 0.32 s     → the server is doing ~0.3 s of *something* per request
+```
+
+The network is ruled out. The server is spending time somewhere. The ticket says "running hot", so the next question is whether that time is CPU.
+
+## 4. What commands, metrics, and logs should I use?
+
+I put load on it and watch both containers at the same time. I watch PostgreSQL too, because "slow search" often means "slow query":
 
 ```sh
+# terminal 1: steady, modest load
+hey -z 15s -c 4 "$B/v1/flights?$Q"
+
+# terminal 2: while that runs
 docker stats --no-stream go-airline-booking-api-1 airline-postgres
 ```
 
-Then run the same commands with the fault off (`LAB_FAULTS=`) to get a baseline. Always compare against something.
+(`hey` is optional. Four parallel `curl` loops work too.)
 
-**Lab observation** (MacBook with 8 CPUs, one run):
-
-| | Fault off | `LAB_FAULTS=cpu` |
-| --- | --- | --- |
-| Single valid search, total | ~0.002–0.003 s | ~0.32 s |
-| `hey -c 4`, 15 s | ~4,870 req/s, all 200 | ~11 req/s, all 200 |
-| API container CPU under load | ~75% | ~397% |
-| PostgreSQL CPU under load | ~53% | ~0.4% |
-| API memory | ~13 MiB | ~16 MiB |
-
-`docker stats` reports CPU per core: 100% is one full core, and 400% is four. With `-c 4`, 397% means about four cores were busy the whole time.
-
-## 4. Gather evidence
-
-**Logs:** each request writes a JSON access line with `request_id`, `status`, and `duration_ms`:
+Then logs and metrics:
 
 ```sh
-docker compose logs --since 5m api | tail -5
+docker compose logs --since 2m api | tail -3
+curl -s "$B/metrics" | grep -E '^db_pool_(acquires_total|acquire_duration_seconds_total|acquired_connections) '
 ```
 
-A server-side `duration_ms` close to curl's total rules out the network as the main cost.
-
-**Metrics:** if Prometheus scrapes the API (see [monitoring](../monitoring/prometheus-grafana.md)), graph these over the same window:
+If Prometheus scrapes the API ([setup](../monitoring/prometheus-grafana.md)):
 
 ```promql
 rate(process_cpu_seconds_total{job="mac-go-api"}[1m])
-```
-
-```promql
 sum by (status) (rate(http_requests_total{job="mac-go-api",route="GET /v1/flights"}[1m]))
+histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="mac-go-api",route="GET /v1/flights",status="200"}[5m])))
 ```
 
-```promql
-histogram_quantile(0.95, sum by (le) (
-  rate(http_request_duration_seconds_bucket{job="mac-go-api",route="GET /v1/flights",status="200"}[5m])))
-```
+## 5. What does each result mean?
 
-```promql
-rate(db_pool_acquire_duration_seconds_total{job="mac-go-api"}[1m])
-```
+**Observed:**
 
-Without Prometheus, `curl -s "$B/metrics" | grep -E '^(process_cpu|db_pool_acquired|go_goroutines)'` gives the raw values.
+| Check | Fault off | Fault on | What it tells me |
+| --- | --- | --- | --- |
+| `hey -c 4` throughput | ~4,870 req/s | ~11 req/s | Real, big regression |
+| Status codes | all 200 | all 200 | Not an error problem. The requests are valid. |
+| API CPU (`docker stats`) | ~75% | **~397%** | Four busy cores for four concurrent requests: each request keeps one core fully busy |
+| PostgreSQL CPU | ~53% | **~0.4%** | The database is almost idle |
+| API memory | ~13 MiB | ~16 MiB | Nothing interesting |
+| Access log `duration_ms` | ~1 | ~350 | The server itself measures the slowness, so it isn't the client or the network |
+| Pool acquires over 10 s of load | — | +117 acquires, +0.01 s total wait | Requests get DB connections instantly |
 
-**Database:** during load, look at what PostgreSQL is doing with the activity query in [database troubleshooting](../database-troubleshooting.md#read-only-session-inspection).
+How to read `docker stats`: 100% = one core. 397% with `-c 4` means each in-flight request is burning a full core for its entire lifetime.
 
-## 5. What we know vs what we assume
+The result that changes my direction: **PostgreSQL CPU went *down*** (from ~53% to ~0.4%). If the query were slow, the database would be busy. It dropped because the API now serves about 11 requests per second instead of about 4,870, so it barely sends the database any work.
 
-| Known (measured) | Assumed or unknown so far |
+## 6. What do we know vs what are we only assuming?
+
+| Known (I measured it) | Only assumed (not proven yet) |
 | --- | --- |
-| Valid searches are ~100× slower than baseline | That the search SQL is the slow part |
-| API CPU scales with concurrent valid searches | That more CPU would fix it |
-| PostgreSQL CPU is near idle during the slowdown | That this is a "database problem" |
-| Invalid searches are still fast | That every route is affected |
-| Memory barely moves | Anything about GC without looking at GC metrics |
+| Valid searches are ~100× slower | "The search query got slow" |
+| Every response is 200 | "We need an index" |
+| API CPU scales with concurrency | "More CPU would fix it" |
+| PostgreSQL is idle; pool waits are ~0 | "It's the database" |
+| Server-side duration matches the client's | Which *part* of the handler burns CPU |
 
-The tempting guess is "search queries got slow, add an index." Nothing measured so far supports it.
+The obvious guess, "slow SQL, add an index", contradicts two measurements. I drop it.
 
-## 6. Narrow the problem
+## 7. How do I narrow the problem layer by layer?
 
-Ask questions that split the request path in half:
+```mermaid
+flowchart TD
+    A[Valid search is slow, API CPU high] --> B{Is PostgreSQL busy?}
+    B -- "yes" --> B1[Inspect queries in pg_stat_activity]
+    B -- "no, ~0.4% CPU" --> C{Do requests wait for pool connections?}
+    C -- "yes" --> C1[Pool contention path]
+    C -- "no, ~0 wait" --> D{Does cost scale with rows returned?}
+    D -- "yes" --> D1[Serialization or per-row work]
+    D -- "no" --> E{Do rejected requests pay it?}
+    E -- "yes" --> E1[Middleware or shared code]
+    E -- "no" --> F[Work after validation, not driven by data size: read the handler]
+```
 
-1. **Is it the database?** PostgreSQL CPU is flat. **Lab observation:** over 10 s of `hey -c 4`, `db_pool_acquires_total` rose by 117 while `db_pool_acquire_duration_seconds_total` rose by only ~0.01 s, so requests weren't waiting for connections either. Whatever burns CPU is inside the API process.
-2. **Is it proportional to data?** Search a date with no flights:
+I've already answered the first two boxes. The next two take one command each.
 
-   ```sh
-   curl -sS -o /dev/null -w 'status=%{http_code} total=%{time_total}s\n' \
-     "$B/v1/flights?origin=CAI&destination=JED&date=2030-01-01"
-   ```
+**Does the cost depend on how much data comes back?** I search a date with no flights:
 
-   **Lab observation:** an empty result took ~0.29 s, almost as slow as a two-item page. So the cost isn't driven by the rows returned.
-3. **Before or after validation?** Invalid requests stay fast (~1–3 ms), so the expensive part runs after validation. With the empty-page result, it most likely runs after the query too, while the response is being built.
-4. **Is it only this route?** `GET /v1/flight-instances/{id}` uses the same store and database and stays fast.
+```sh
+curl -sS -o /dev/null -w 'status=%{http_code} total=%{time_total}s\n' \
+  "$B/v1/flights?origin=CAI&destination=JED&date=2030-01-01"
+```
 
-Now the question is small: *what does the search handler do after a successful query, before writing the response?* This build has no `pprof` endpoint. In a real service, a CPU profile would answer that directly. Here you read the handler.
+**Observed:** `200`, empty `items`, **~0.29 s**. Zero rows is almost as slow as two rows, so most of the cost is a fixed amount per request.
 
-## 7. Root cause
+**Do rejected requests pay it?** `curl -i "$B/v1/flights"` still returns 400 in about 1–3 ms. So the expensive part runs *after* validation.
 
-**Code fact:** the handler in [internal/httpapi/flight.go](../../internal/httpapi/flight.go) calls `searchETag` on the result page before writing the JSON. With `LAB_FAULTS` containing `cpu`, [`searchETag`](../../internal/httpapi/flight_integrity.go):
+**Is it only this route?** `GET /v1/flight-instances/{id}` uses the same store and the same database, and returns in about 5 ms. The problem is specific to the search handler.
 
-1. JSON-encodes each result and runs **60,000 SHA-256 rounds per item**.
-2. Then runs another **2,400,000 rounds** (`60,000 × 40`), even for an empty page.
-3. Sets the result as an `ETag` header.
+So now I know where to look:
 
-The work is pure CPU, never checks the request context, and uses no database. That matches every observation: CPU scales with concurrency, PostgreSQL is idle, empty pages are still slow, and invalid requests skip it. Requests cut off by the 10-second `http.TimeoutHandler` keep computing in the background until the loop finishes.
+```text
+request → validation → SQL query → [ ??? fixed, CPU-heavy work ??? ] → write response
+                                      ^ here
+```
 
-The code comment frames this as "hardening" the ETag. It's the injected fault, not a real caching or security technique.
+**When to open the code:** now. I've narrowed it to one handler and one phase. Without that narrowing, reading code is a needle-in-a-haystack search. In a real service I'd grab a CPU profile first (`pprof`). This build doesn't expose one, so I read the handler.
 
-## 8. Verify
+In `internal/httpapi/flight.go`, the `GET /v1/flights` handler runs the query, builds the result slice, and then does one more thing before `JSON(...)`: it calls `searchETag(result)` and sets an `ETag` header.
+
+A quick check confirms it's involved:
+
+```sh
+curl -sI "$B/v1/flights?$Q" | grep -i etag
+```
+
+With the fault on, it prints an `ETag`. With the fault off, it prints nothing.
+
+## 8. Root cause
+
+**Code fact:** `searchETag` in [`internal/httpapi/flight_integrity.go`](../../internal/httpapi/flight_integrity.go) only runs when `LAB_FAULTS` contains `cpu`. It:
+
+1. JSON-encodes each result item and runs **60,000 SHA-256 rounds per item**, then
+2. runs **2,400,000 more rounds** (60,000 × 40) no matter how many items there are, then
+3. returns the digest as the `ETag`.
+
+The comment calls this "hardening" the ETag. That's the injected fault, not a real technique. It explains every observation:
+
+| Observation | Explained by |
+| --- | --- |
+| API CPU ~1 core per concurrent request | Pure CPU hashing loop |
+| PostgreSQL idle, no pool waits | The loop runs after the query and never touches the DB |
+| Empty page still ~0.29 s | The 2.4M fixed rounds dominate |
+| Invalid requests fast | Validation returns before the query and the ETag |
+| Flight details fast | Different handler, no ETag |
+
+It also ignores the request context. Even when `http.TimeoutHandler` (10 s by default) gives up on a request, the hashing keeps running until it finishes. Timeouts don't protect you from this kind of work.
+
+## 9. Fix / verification
+
+The fix here is to turn off the fault. In real life you'd remove the work or make it cheap, and cancel it via the context.
 
 ```sh
 LAB_FAULTS= docker compose --profile app up -d --force-recreate api
 curl --fail-with-body "$B/readyz"
 curl -sS -o /dev/null -w 'status=%{http_code} total=%{time_total}s\n' "$B/v1/flights?$Q"
 hey -z 15s -c 4 "$B/v1/flights?$Q"
+curl -sI "$B/v1/flights?$Q" | grep -ci etag      # 0 = no ETag header
 ```
 
-Compare with the numbers from step 3, using the same concurrency and query. For Prometheus graphs, use a fresh time window, because 5-minute rates still contain fault-era samples. Confirm the response no longer carries an `ETag` header (`curl -sI "$B/v1/flights?$Q"`), since that header only exists when the fault is on.
+I verify with the **same query and the same concurrency** I used to find the problem. **Observed** after the fix: about 0.003 s per request, about 4,870 req/s, all 200. For Prometheus, look at a fresh time window: a 5-minute `rate()` still includes samples from while the fault was on.
 
-## 9. Lesson
+## 10. Key lesson
 
-- High CPU with an idle database points into the application process. Confirm it with the empty-result and invalid-request comparisons.
-- A benchmark is only as good as its status codes.
-- Work that ignores the request context keeps using CPU after the client has given up, so timeouts don't protect you from it.
-- You didn't need to know Go to solve this. You needed to know that a successful request takes a different path than a rejected one, and to test each half of that path.
+- **Check status codes before latency.** A benchmark full of 400s measures how fast you reject work.
+- **High app CPU plus an idle database points into the app.** The database got *quieter* during the "slow search" incident.
+- **Narrow with cheap comparisons** (empty result vs full, invalid vs valid, one route vs its neighbor) before reading code.
+- **Don't fix what you didn't measure.** An index would have changed nothing.
+- **CPU work that ignores cancellation keeps running after timeouts,** so it eats capacity for clients who have already given up.
