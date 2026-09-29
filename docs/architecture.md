@@ -1,5 +1,42 @@
 # Architecture and decisions
 
+[Back to the troubleshooting lab](../README.md)
+
+## What a request actually crosses
+
+```mermaid
+flowchart LR
+    Client --> Handler[Go router and HTTP handler]
+    Handler --> Logic[Booking or flight logic]
+    Logic --> Pool[pgx connection pool]
+    Pool --> DB[(PostgreSQL)]
+    DB --> Pool
+    Pool --> Logic
+    Logic --> Handler
+    Handler --> Client
+```
+
+Public `GET /v1/flights` validates origin, destination, and date, queries upcoming
+flight instances, then serializes a result page. Flight details and seat maps use
+separate endpoints.
+
+An authenticated booking starts from a trusted quote for a fare. The quote is consumed
+once to create a DRAFT booking. After adding passengers, the user can call
+`POST /v1/bookings/{booking_id}/seat-holds` with the booking segment, flight instance,
+passenger/seat pairs, and a valid idempotency key. The hold service begins a transaction,
+checks eligibility and ownership, locks inventory in deterministic order, writes seat
+assignments and booking state, and commits the response/replay record together. A worker
+expires holds and claims outbox events using the same PostgreSQL database. See the
+[incident walkthroughs](lab.md) and the [database guide](database-troubleshooting.md).
+
+The API exposes `/healthz`, `/readyz`, and `/metrics`. The embedded web UI at `/`
+uses the same HTTP routes. The local [Compose file](../docker-compose.yml) runs API,
+worker, and PostgreSQL; the API and worker each own a connection pool. The AWS
+[application deployment](aws-deployment.md) and the reported [remote monitoring
+lab](monitoring/prometheus-grafana.md) are separate environments.
+
+## Engineering decisions
+
 The API and worker share domain services and PostgreSQL. Domain packages never depend
 on HTTP. HTTP DTOs explicitly select fields; travel-document ciphertext is not exposed.
 

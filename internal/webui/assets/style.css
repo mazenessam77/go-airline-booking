@@ -196,6 +196,143 @@ a {
   padding: 38px 8px 32px;
   overflow: hidden;
 }
+.hero-logo {
+  --logo-ease: cubic-bezier(0.2, 0.9, 0.25, 1.12);
+  position: relative;
+  width: 300px;
+  aspect-ratio: 706 / 257;
+  margin-bottom: 22px;
+  filter: drop-shadow(0 12px 22px #a4232324);
+  animation: logo-glow 1.4s 0.6s ease-out both;
+}
+.logo-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.logo-mark-1 {
+  animation: logo-rise-left 0.8s 0.1s var(--logo-ease) both;
+}
+.logo-mark-2 {
+  animation: logo-rise 0.8s 0.25s var(--logo-ease) both;
+}
+.logo-mark-3 {
+  animation: logo-drop 0.9s 0.4s var(--logo-ease) both;
+}
+.logo-divider {
+  animation: logo-draw 0.6s 0.8s cubic-bezier(0.65, 0, 0.35, 1) both;
+}
+.logo-word-1,
+.logo-word-2,
+.logo-word-3 {
+  animation: logo-unveil 0.9s var(--logo-ease) both;
+}
+.logo-word-1 {
+  animation-delay: 1s;
+}
+.logo-word-2 {
+  animation-delay: 1.12s;
+}
+.logo-word-3 {
+  animation-delay: 1.26s;
+}
+/* Light sweep clipped to the logo's own shapes. */
+.hero-logo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(
+      105deg,
+      transparent 38%,
+      #ffffffc0 48%,
+      #ffffff 50%,
+      #ffffffc0 52%,
+      transparent 62%
+    )
+    no-repeat;
+  background-size: 260% 100%;
+  --logo-shapes: url("brand/mark-1.png"), url("brand/mark-2.png"),
+    url("brand/mark-3.png"), url("brand/word-1.png"), url("brand/word-2.png"),
+    url("brand/word-3.png");
+  -webkit-mask-image: var(--logo-shapes);
+  mask-image: var(--logo-shapes);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  animation: logo-sheen 1.2s 1.9s ease-in-out both;
+}
+.hero-logo:hover::after {
+  animation: logo-sheen-again 1s ease-in-out both;
+}
+@keyframes logo-rise-left {
+  from {
+    opacity: 0;
+    transform: translate(-28px, 22px) scale(0.9);
+  }
+}
+@keyframes logo-rise {
+  from {
+    opacity: 0;
+    transform: translate(-12px, 40px);
+  }
+}
+@keyframes logo-drop {
+  from {
+    opacity: 0;
+    transform: translate(26px, -46px);
+  }
+}
+@keyframes logo-draw {
+  from {
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@keyframes logo-unveil {
+  from {
+    opacity: 0;
+    transform: translateX(-22px);
+    clip-path: inset(0 54% 0 46%);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(0 0 0 46%);
+    filter: blur(0);
+  }
+}
+@keyframes logo-glow {
+  from {
+    filter: drop-shadow(0 12px 22px #a4232300);
+  }
+}
+@keyframes logo-sheen {
+  0% {
+    opacity: 1;
+    background-position: 130% 0;
+  }
+  100% {
+    opacity: 1;
+    background-position: -30% 0;
+  }
+}
+@keyframes logo-sheen-again {
+  0% {
+    opacity: 1;
+    background-position: 130% 0;
+  }
+  100% {
+    opacity: 1;
+    background-position: -30% 0;
+  }
+}
 .eyebrow {
   font-size: 9px;
   font-weight: 750;
@@ -1246,6 +1383,10 @@ dialog .dialog-close {
   .hero h1 {
     font-size: 36px;
     letter-spacing: -1.5px;
+  }
+  .hero-logo {
+    width: 230px;
+    margin-bottom: 16px;
   }
   .hero p {
     font-size: 11px;

@@ -4,6 +4,8 @@ package webui
 import (
 	"embed"
 	"net/http"
+	"path"
+	"strings"
 )
 
 //go:embed assets/*
@@ -22,6 +24,10 @@ func Handler(api http.Handler) http.Handler {
 		case "/assets/style.css":
 			name = "style.css"
 			contentType = "text/css; charset=utf-8"
+		}
+		if file, ok := strings.CutPrefix(r.URL.Path, "/assets/brand/"); ok && path.Ext(file) == ".png" && path.Base(file) == file {
+			name = "brand/" + file
+			contentType = "image/png"
 		}
 		if name == "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 			api.ServeHTTP(w, r)

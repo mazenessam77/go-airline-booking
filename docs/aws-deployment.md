@@ -1,43 +1,11 @@
-# AWS EC2 CI/CD
+# Existing AWS application deployment
 
-This demo pipeline targets AWS account `740089361110`, region `us-east-1`, and EC2
-instance `i-086da8aaafa2b2683`.
+[Back to the troubleshooting lab](../README.md) · [Remote monitoring example](monitoring/prometheus-grafana.md)
 
-On every push to `main`, GitHub Actions first completes formatting, tests, race tests,
-database migration checks, Go security scans, the container scan, and DAST. It then uses
-GitHub OIDC to assume a short-lived AWS role, builds and rescans the exact commit image,
-pushes it to private ECR, resolves its immutable digest, and sends that digest to the EC2
-instance through SSM. No AWS access keys or EC2 private key are stored in GitHub.
+This is an older, environment-specific **application deployment** path. It is separate from the reported Ubuntu/k3s monitoring instance. The CI workflow builds and scans the image, pushes an immutable digest to ECR, and invokes SSM to deploy the API, worker, and PostgreSQL on one EC2 host. That host runs the application with Docker Compose and binds its API to `127.0.0.1:8080` for private SSM port forwarding. It does not install k3s, Prometheus, Grafana, or Alertmanager.
 
-One-time AWS resources are described in `deploy/aws/infrastructure.yml`:
+The checked-in `deploy/aws` scripts, EC2 image Compose file, and CI workflow contain account, region, instance, image, and IAM assumptions for their original environment. Read and adapt those source files before using them in another AWS account. This page does not provide a one-line command that would accidentally target that existing environment.
 
-```sh
-AWS_PROFILE=hr-portal-friend AWS_REGION=us-east-1 bash deploy/aws/provision.sh
-```
+The deployment sequence in [the host script](../deploy/ec2/image/host-deploy.sh) is: pull the pinned image digest, start PostgreSQL, apply Goose migrations, seed only fictional demo data, start API and worker, then check `/readyz`. The bootstrap script creates a local random database password; the runtime file is kept on the EC2 host. The API is reached through an authenticated SSM port-forwarding session to the instance, using your own AWS profile, region, and instance ID.
 
-One-time host setup installs Docker Compose and SSM Agent, then creates a random local demo
-database password. Copy `deploy/ec2` to the instance and run:
-
-```sh
-sudo /tmp/airline-bootstrap/bootstrap-host.sh
-```
-
-The deployment starts PostgreSQL, applies Goose migrations, loads only fictional demo data,
-and starts the API and worker. The API listens only on `127.0.0.1:8080`; the existing Apache
-site is not changed. Access it privately using an SSM port-forwarding session:
-
-```sh
-aws ssm start-session \
-  --profile hr-portal-friend \
-  --region us-east-1 \
-  --target i-086da8aaafa2b2683 \
-  --document-name AWS-StartPortForwardingSession \
-  --parameters '{"portNumber":["8080"],"localPortNumber":["8080"]}'
-```
-
-Then open `http://127.0.0.1:8080` locally.
-
-This is a private demo deployment. PostgreSQL uses the instance's existing unencrypted root
-disk and local container networking, so never enter real customer, payment, or travel-document
-data. A public production launch still needs encrypted database storage, verified TLS, backups,
-and HTTPS ingress.
+This remains a private demo. The EC2 Compose PostgreSQL has no published host port. The stack needs its own operational review before any public deployment or real customer data. See [security operations](security.md) and the [historical delivery report](delivery.md) for the implementation status at the time of the earlier audit.

@@ -1,0 +1,49 @@
+# Example for the monitoring lab. Replace YOUR_MAC_TAILSCALE_IP before applying.
+# Assumes Helm release "monitoring" in namespace "monitoring".
+apiVersion: v1
+kind: Service
+metadata:
+  name: mac-go-api
+  namespace: monitoring
+  labels:
+    app: mac-go-api
+    monitoring-job: mac-go-api
+spec:
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: mac-go-api
+  namespace: monitoring
+subsets:
+  - addresses:
+      - ip: YOUR_MAC_TAILSCALE_IP
+    ports:
+      - name: metrics
+        port: 8080
+        protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mac-go-api
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  jobLabel: monitoring-job
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  selector:
+    matchLabels:
+      app: mac-go-api
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

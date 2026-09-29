@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/mazenessam77/go-airline-booking/internal/database"
 	"github.com/mazenessam77/go-airline-booking/internal/flight"
 	"github.com/mazenessam77/go-airline-booking/internal/httpapi"
+	"github.com/mazenessam77/go-airline-booking/internal/lab"
 	"github.com/mazenessam77/go-airline-booking/internal/observability"
 	"github.com/mazenessam77/go-airline-booking/internal/payment"
 	"github.com/mazenessam77/go-airline-booking/internal/quote"
@@ -103,9 +105,12 @@ func run(logger *slog.Logger) error {
 		})
 	})
 
+	metrics := observability.NewPrometheus()
+	metrics.RegisterPool(pool)
+
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           webui.Handler(httpapi.New(mux, httpapi.Options{Logger: logger, Timeout: cfg.RequestTimeout, BodyLimit: cfg.BodyLimit, AllowedOrigins: cfg.AllowedOrigins, TrustedProxies: cfg.TrustedProxies})),
+		Handler:           withMetrics(metrics, mux, webui.Handler(httpapi.New(mux, httpapi.Options{Logger: logger, Timeout: cfg.RequestTimeout, BodyLimit: cfg.BodyLimit, AllowedOrigins: cfg.AllowedOrigins, TrustedProxies: cfg.TrustedProxies}))),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      cfg.RequestTimeout + 5*time.Second,
@@ -120,6 +125,8 @@ func run(logger *slog.Logger) error {
 			"HTTP server started",
 			"address",
 			cfg.HTTPAddr,
+			"lab_faults",
+			lab.Active(),
 		)
 
 		serverErrors <- server.ListenAndServe()
@@ -152,6 +159,35 @@ func run(logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+// withMetrics serves GET /metrics ahead of the API middleware and records
+// request metrics for everything else, labelled by matched route pattern.
+func withMetrics(metrics *observability.Prometheus, mux *http.ServeMux, app http.Handler) http.Handler {
+	scrape := metrics.Handler()
+	route := func(r *http.Request) string {
+		switch r.URL.Path {
+		case "/", "/assets/app.js", "/assets/style.css":
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				return "webui"
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/brand/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			return "webui"
+		}
+		if _, pattern := mux.Handler(r); pattern != "" && pattern != "/" {
+			return pattern
+		}
+		return "unmatched"
+	}
+	instrumented := metrics.Middleware(app, route)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			scrape.ServeHTTP(w, r)
+			return
+		}
+		instrumented.ServeHTTP(w, r)
+	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {

@@ -55,14 +55,14 @@ go test -race ./internal/booking/...
 go test -race ./...
 go build -o bin/api ./cmd/api
 go build -o bin/worker ./cmd/worker
-GOOSE_BIN=/Users/macbookair/go/bin/goose CHECK_MIGRATION_ROUNDTRIP=1 sh scripts/test-local.sh
-GOOSE_BIN=/Users/macbookair/go/bin/goose RUN_BENCHMARKS=1 RUN_QUERY_PLANS=1 CHECK_RUNTIME_GRANTS=1 sh scripts/test-local.sh
+GOOSE_BIN="$(go env GOPATH)/bin/goose" CHECK_MIGRATION_ROUNDTRIP=1 sh scripts/test-local.sh
+GOOSE_BIN="$(go env GOPATH)/bin/goose" RUN_BENCHMARKS=1 RUN_QUERY_PLANS=1 CHECK_RUNTIME_GRANTS=1 sh scripts/test-local.sh
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 go run golang.org/x/vuln/cmd/govulncheck@latest -show verbose ./...
 npx --yes @redocly/cli@latest lint api/openapi.json
 docker build -t airline-booking:audit .
 sh scripts/smoke-local.sh
-GOOSE_BIN=/Users/macbookair/go/bin/goose sh scripts/demo-local.sh
+GOOSE_BIN="$(go env GOPATH)/bin/goose" sh scripts/demo-local.sh
 node scripts/ui-smoke.mjs
 git diff --check
 ```
@@ -90,7 +90,7 @@ records durable domain-ledger receipts and does not send notifications.
 
 Before public launch, approve jurisdiction-specific PII retention/legal-hold rules,
 complete account verification/reset/MFA design, provision production database roles and
-TLS secrets, wire telemetry exporters and the ingress, and test backup restore and
+TLS secrets, wire a tracing backend and the ingress (Prometheus `/metrics` is already wired for the local lab), and test backup restore and
 representative multi-replica load. RLS is intentionally deferred until pooled
 transaction-scoped identity has a tested design. OWASP coverage is not certification;
 an independent deployment/security review remains necessary.
