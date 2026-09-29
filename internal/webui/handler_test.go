@@ -20,6 +20,7 @@ func TestHandlerServesAssetsAndDelegatesAPI(t *testing.T) {
 		{"/", "text/html", "search-form"},
 		{"/assets/app.js", "text/javascript", "/v1/flights"},
 		{"/assets/style.css", "text/css", ".booking-panel"},
+		{"/assets/brand/mark-3.png", "image/png", "PNG"},
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tc.path, nil))
