@@ -63,6 +63,10 @@ func (store *Store) HoldSeats(
 		_ = tx.Rollback(rollbackContext)
 	}()
 
+	if err = reconcileHeldInventory(ctx, tx, normalizedParams.FlightInstanceID); err != nil {
+		return SeatHold{}, err
+	}
+
 	var bookingStatus string
 	var record idempotency.Record
 	if normalizedParams.IdempotencyKey != "" {

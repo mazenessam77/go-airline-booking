@@ -64,6 +64,9 @@ func RegisterFlightRoutes(mux *http.ServeMux, s flight.Store) {
 		for _, f := range items {
 			result = append(result, flightResponse(f))
 		}
+		if tag := searchETag(result); tag != "" {
+			w.Header().Set("ETag", tag)
+		}
 		JSON(w, 200, map[string]any{"items": result})
 	})
 	mux.HandleFunc("GET /v1/flight-instances/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +80,7 @@ func RegisterFlightRoutes(mux *http.ServeMux, s flight.Store) {
 			flightError(w, r, err)
 			return
 		}
+		verifyFareFreshness(r.Context())
 		type fareDTO struct {
 			ID         string `json:"id"`
 			Code       string `json:"code"`
