@@ -1,4 +1,6 @@
-# Changed files
+# Historical changed files
+
+This is an earlier implementation inventory, not a list of changes in the current documentation pass.
 
 No changes were committed, pushed or merged. The original three applied migrations are unchanged.
 

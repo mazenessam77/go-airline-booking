@@ -28,9 +28,9 @@ Access logs contain generated request IDs, status and elapsed time. Never log ra
 paths, query strings, Authorization, Cookie, passwords, tokens, PNRs, email addresses,
 passenger details, travel documents, payment bodies, PostgreSQL errors or panic values.
 Startup and worker logs use fixed error codes. Diagnostic details belong in a separately
-restricted, redacted operational workflow. Metrics and trace labels must have bounded
-cardinality and exclude customer identifiers. The observability package supplies interfaces
-and atomic counters; an exporter and distributed tracing backend still need deployment wiring.
+restricted, redacted operational workflow. Metrics labels have bounded cardinality and exclude customer identifiers. The API
+serves Prometheus metrics at `/metrics`; the [metric reference](observability.md) lists
+what is exported. Distributed tracing still needs a wired adapter and backend.
 
 ## Rotation, backup and retention
 
